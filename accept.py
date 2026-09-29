@@ -1,4 +1,4 @@
-"""正式验收(助教用)。在打了 tag 的干净仓库里运行:
+"""正式验收(助教用)。在本仓库最新 main 的干净 clone 里运行:
 
     python accept.py 提交1.zip 提交2.zip ... [--perturb 3] [--seed <当天定>] [--csv 结果.csv]
 
