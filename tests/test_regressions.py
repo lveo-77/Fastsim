@@ -60,25 +60,34 @@ def test_failed_worker_is_reaped(tmp_path,monkeypatch,code,reason):
     assert not ({p.pid for p in mp.active_children()}-before)
 
 
-def test_lateral_limit_is_independent_of_longitudinal_limit():
-    p = CarParams()
-    assert p.a_lat_max / p.g == pytest.approx(.3)
-    assert p.accel_max / p.g == pytest.approx(.4)
-    assert p.decel_max / p.g == pytest.approx(.4)
-    assert p.v_max == 6
-    for command in (0, 6):
-        car = Car(p)
-        car.v = 3
-        car.steer = p.max_steer
-        car.step(command,p.max_steer,.02)
-        assert abs(car.accel) / p.g == pytest.approx(.4)
-        assert abs(car.v * car.yaw_rate) / p.g == pytest.approx(.3)
-        assert math.hypot(car.accel,car.v*car.yaw_rate) <= p.mu*p.g
 
-def test_side_grip_noise_is_reproducible_and_bounded():
-    from fastsim import noisy_params
+def test_final_limits_share_friction_circle():
     p=CarParams()
-    a=noisy_params(p,np.random.default_rng(7))
-    b=noisy_params(p,np.random.default_rng(7))
-    assert a == b and a.lateral_g != p.lateral_g
-    assert .27 <= a.lateral_g <= .33
+    assert p.a_lat_max/p.g == pytest.approx(.4)
+    assert p.accel_max/p.g == pytest.approx(.3)
+    assert p.decel_max/p.g == pytest.approx(.4)
+    assert p.v_max == 6
+    for command, expected in ((6,.3),(0,-.4),(3,0)):
+        car=Car(p); car.v=3; car.steer=p.max_steer
+        car.step(command,p.max_steer,.02)
+        assert car.accel/p.g == pytest.approx(expected)
+        lateral=abs(car.v*car.yaw_rate)
+        budget=math.sqrt(max((p.mu*p.g)**2-car.accel**2,0))
+        assert lateral == pytest.approx(budget,abs=1e-7)
+        assert math.hypot(car.accel,lateral) <= p.mu*p.g+1e-9
+
+def test_releasing_brake_restores_turning_capacity():
+    p=CarParams(); lateral=[]
+    for decel in (.4,.2,0):
+        car=Car(p); car.v=3; car.steer=p.max_steer
+        car.step(3-decel*p.g*p.speed_tau,p.max_steer,.02)
+        lateral.append(abs(car.v*car.yaw_rate))
+    assert lateral[0] < lateral[1] < lateral[2]
+
+def test_unified_grip_noise_is_reproducible_and_bounded():
+    from fastsim import noisy_params
+    p=CarParams(); a=noisy_params(p,np.random.default_rng(7))
+    assert a == noisy_params(p,np.random.default_rng(7))
+    assert .36 <= a.mu <= .44 and a.mu != p.mu
+    assert a.a_lat_max == a.decel_max == a.mu*a.g
+    assert a.accel_max/a.g == pytest.approx(.3)

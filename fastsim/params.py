@@ -19,25 +19,23 @@ class CarParams:
 
     # --- 性能上限(假设)---
     mass: float = 3.0               # 整车质量 kg
-    mu: float = 0.8                 # 轮胎与地面摩擦系数
+    mu: float = 0.4                 # 轮胎与地面摩擦系数
     g: float = 9.81
-    rear_load: float = 0.5          # 后轴承担的重量比例(后驱:只有后轮能出力、刹车)
+    accel_g: float = 0.3           # 整车驱动能力上限 G;不按后轴载荷推导
     v_max: float = 6.0              # 极速 m/s
     speed_tau: float = 0.35         # 电机响应时间常数 s:给了目标速度,车要慢慢追上去
 
-    lateral_g: float = 0.3         # 独立侧向能力上限 G;不改变纵向加减速
-
     @property
     def a_lat_max(self) -> float:
-        """侧向能力上限,且不能超过地面摩擦允许的 μg。"""
-        return min(self.lateral_g, self.mu) * self.g
+        """没有纵向加减速时的侧向极限;组合运动共用摩擦圆。"""
+        return self.mu * self.g
 
     @property
     def accel_max(self) -> float:
-        """最大加速度 = μg × 后轴载荷比,只有后轮驱动。"""
-        return self.mu * self.g * self.rear_load
+        """驱动能力与轮胎抓地共同限制加速。"""
+        return min(self.accel_g, self.mu) * self.g
 
     @property
     def decel_max(self) -> float:
-        """最大减速度:电机刹车同样只作用在后轮。"""
-        return self.mu * self.g * self.rear_load
+        """假设四轮制动能力充足,直线制动受总抓地限制。"""
+        return self.mu * self.g
