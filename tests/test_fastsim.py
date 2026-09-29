@@ -124,7 +124,7 @@ def _student(tmp_path: Path, name: str, code: str) -> Path:
 
 def _accept_one(student: Path, track_name='B'):
     import accept
-    workdir = accept.workspace(student)
+    workdir = accept.workspace(accept.find_homework(student))
     return accept.run_one(workdir, load_track(track_name), CarParams())
 
 
@@ -168,3 +168,18 @@ def test_accept_reports_crash_and_slow_controllers(tmp_path):
                 return 1.0, 0.0
     ''')
     assert _accept_one(slow)[1] == 'too_slow'
+
+
+@pytest.mark.parametrize('layout', ['homework/', 'wrap/homework/', ''])
+def test_accept_finds_homework_in_any_zip_layout(tmp_path, layout):
+    import zipfile
+    import accept
+    z = tmp_path / '2026001_张三.zip'
+    with zipfile.ZipFile(z, 'w') as f:
+        f.writestr(layout + 'controller.py', 'class Controller: pass\n')
+        f.writestr(layout + 'lib/controller.py', '')            # 更深的同名文件不能被选中
+        f.writestr('__MACOSX/' + layout + 'controller.py', '')
+    out = tmp_path / 'x'
+    zipfile.ZipFile(z).extractall(out)
+    hw = accept.find_homework(out)
+    assert (hw / 'controller.py').read_text() == 'class Controller: pass\n'
