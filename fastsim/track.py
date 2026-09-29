@@ -61,6 +61,29 @@ class Track:
                 for edge in (self.left, self.right)]
         return normal, dist[0], dist[1]
 
+    @property
+    def vertices(self) -> np.ndarray:
+        """两条边界的全部折点。"""
+        return np.vstack([self.left, self.right])
+
+    def perturbed(self, seed: int, jitter: float = 0.03) -> 'Track':
+        """同一条赛道的扰动版:边界折点各自沿法向抖 ±jitter 米,再整体随机旋转、平移。
+
+        验收时用它防止"认出是哪条赛道、调出背好的答案";估读数据本来也有这个量级的误差。
+        """
+        rng = np.random.default_rng(seed)
+
+        def shake(edge):
+            tangent = np.roll(edge, -1, axis=0) - np.roll(edge, 1, axis=0)
+            normal = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1) / np.hypot(*tangent.T)[:, None]
+            return edge + normal * rng.uniform(-jitter, jitter, len(edge))[:, None]
+
+        th = rng.uniform(-math.pi, math.pi)
+        rot = np.array([[math.cos(th), -math.sin(th)], [math.sin(th), math.cos(th)]])
+        shift = rng.uniform(-5, 5, 2)
+        move = lambda pts: pts @ rot.T + shift
+        return Track(f'{self.name}~{seed}', move(self.centerline), move(shake(self.left)), move(shake(self.right)))
+
     def on_track(self, pts) -> np.ndarray:
         """每个点是否在赛道上(外边界之内、内边界之外)。"""
         pts = np.asarray(pts, float).reshape(-1, 2)

@@ -23,6 +23,8 @@ class Car:
         self.x, self.y, self.yaw = float(x), float(y), float(yaw)
         self.v = 0.0
         self.steer = 0.0
+        self.yaw_rate = 0.0
+        self.accel = 0.0
         self.slip = 0.0         # 0=抓得住,接近 1=完全打滑
 
     def step(self, v_cmd: float, steer_cmd: float, dt: float):
@@ -30,7 +32,7 @@ class Car:
         target_v = min(max(v_cmd, 0.0), p.v_max)
         dv = (target_v - self.v) * min(1.0, dt / p.speed_tau)
         dv = min(max(dv, -p.decel_max * dt), p.accel_max * dt)
-        accel = dv / dt
+        self.accel = accel = dv / dt
         self.v += dv
 
         target_steer = min(max(steer_cmd, -p.max_steer), p.max_steer)
@@ -44,6 +46,7 @@ class Car:
         if a_lat > budget > 0.0:
             self.slip = 1.0 - budget / a_lat
             yaw_rate *= budget / a_lat
+        self.yaw_rate = yaw_rate
         yaw_mid = self.yaw + 0.5 * yaw_rate * dt
         self.x += self.v * math.cos(yaw_mid) * dt
         self.y += self.v * math.sin(yaw_mid) * dt
