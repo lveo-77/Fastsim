@@ -65,7 +65,7 @@ class Track:
         距离是点到边界折线的**最近**距离(精确值),不是沿法向量到边界的距离:
         在弯道、斜边处最近距离更小,所以它是保守的 ——
         以 centerline[i] 为圆心、d_left/d_right 中较小者为半径的圆内全在赛道上,
-        沿法向在 -d_right[i] < t < d_left[i] 之间也一定在赛道上;但实际可用宽度可能更大。
+        单侧距离不保证沿该侧法向移动时不会遇到另一条边界;偏移路线仍需检查 on_track 和车身。
         """
         c = self.centerline
         tangent = np.roll(c, -1, axis=0) - np.roll(c, 1, axis=0)

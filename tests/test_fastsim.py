@@ -125,7 +125,10 @@ def _student(tmp_path: Path, name: str, code: str) -> Path:
 def _accept_one(student: Path, track_name='B'):
     import accept
     workdir = accept.workspace(accept.find_homework(student))
-    return accept.run_one(workdir, load_track(track_name), CarParams())
+    try:
+        return accept.run_one(workdir, load_track(track_name), CarParams())
+    finally:
+        __import__('shutil').rmtree(workdir)
 
 
 def test_accept_runs_default_controller(tmp_path):
@@ -210,7 +213,7 @@ def test_every_pose_during_a_step_is_checked():
     car.reset(0.0, 0.0, 0.0)
     car.v = 6.0
     car.step(6.0, 0.0, 0.02)
-    assert len(car.trace) == 4 and np.allclose(car.trace[-1], (car.x, car.y, car.yaw))
+    assert len(car.trace) >= 13 and np.allclose(car.trace[-1], (car.x, car.y, car.yaw))
     assert not car_off_track(t, car)
     car.trace = np.array([[0.0, 1.0, 0.0], [car.x, car.y, car.yaw]])    # 中途那一刻压在障碍上
     assert car_off_track(t, car)

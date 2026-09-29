@@ -19,7 +19,7 @@ DT = 0.02           # 仿真步长 s(50Hz,和实车控制频率一致)
 
 @dataclass(frozen=True)
 class State:
-    """每步交给控制器的车辆状态(精确值,只读)。"""
+    """每步交给控制器的车辆状态(原版为真值,扰动版带观测噪声;只读)。"""
     t: float            # 本圈已用时间 s
     x: float            # 后轴中心位置 m
     y: float
@@ -67,19 +67,25 @@ def start_pose(track: Track) -> tuple[float, float, float]:
 
 
 def _cross(p0, p1, q0, q1) -> bool:
-    """线段组 p0->p1 (n,2) 与 q0->q1 (m,2) 有没有任何一对严格相交。"""
+    """线段组 p0->p1 (n,2) 与 q0->q1 (m,2) 有没有任何一对相交或接触(含共线重叠)。"""
     def orient(a, b, c):
         return (b[..., 0] - a[..., 0]) * (c[..., 1] - a[..., 1]) - (b[..., 1] - a[..., 1]) * (c[..., 0] - a[..., 0])
     P0, P1, Q0, Q1 = p0[:, None], p1[:, None], q0[None], q1[None]
-    return bool(((orient(P0, P1, Q0) * orient(P0, P1, Q1) < 0) &
-                 (orient(Q0, Q1, P0) * orient(Q0, Q1, P1) < 0)).any())
+    eps = 1e-10
+    a, b = orient(P0, P1, Q0), orient(P0, P1, Q1)
+    c, d = orient(Q0, Q1, P0), orient(Q0, Q1, P1)
+    straddle = (((a <= eps) & (b >= -eps)) | ((b <= eps) & (a >= -eps)))
+    straddle &= (((c <= eps) & (d >= -eps)) | ((d <= eps) & (c >= -eps)))
+    overlap = (np.maximum(np.minimum(P0, P1), np.minimum(Q0, Q1)) <=
+               np.minimum(np.maximum(P0, P1), np.maximum(Q0, Q1)) + eps).all(axis=-1)
+    return bool((straddle & overlap).any())
 
 
 def car_off_track(track: Track, car: Car) -> bool:
     """车身在上一步的运动过程中有没有碰到边界(检查 car.trace 里每个位姿)。
 
     每个位姿查三样:车身四个角都在赛道上、没有边界折点进入车身、车身的边和边界线段不相交。
-    三样都查,车身矩形和边界折线的相交判定才是精确的;只查四个角的话,内弯尖角能从车身侧边插进去。
+    包括边与边的接触和共线重叠。步内使用离散位姿采样,不是严格的连续碰撞检测。
     """
     corners = car.corners(car.trace)                                  # (k,4,2)
     if not track.on_track(corners.reshape(-1, 2)).all():

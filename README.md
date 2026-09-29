@@ -62,7 +62,7 @@ class Controller:
 | 字段 | 含义 |
 |---|---|
 | `t` | 本圈已用时间 s |
-| `x`, `y` | 后轴中心位置 m |
+| `x`, `y` | 地图绝对坐标系下的后轴中心位置 m,无需通过 IMU 积分 |
 | `yaw` | 车头朝向 rad |
 | `v` | 车速 m/s |
 | `yaw_rate` | 横摆角速度 rad/s |
@@ -74,7 +74,7 @@ class Controller:
 ## 规则
 
 - 车从起跑线静止出发,沿中心线方向跑完一整圈计时(冲线时刻插值);
-- **出界**:车身(0.56 × 0.35 m 矩形)碰到边界,即车的任何一个角出了赛道,或边界的任何一个折点进了车身;
+- **出界**:车身(0.56 × 0.35 m 矩形)碰到边界,即车的任何一个角出了赛道,边界折点进入车身,或车身边与边界相交/接触。步内按车身运动量细分采样(上限约 1 cm),含起点和终点;这是离散近似,不是严格连续碰撞检测;
 - 超过 120 秒没跑完算超时;
 - `Controller` 初始化限时 60 秒;每步平均计算时间不超过 20 ms(对应实车 50 Hz),单步不超过 1 秒;
 - 返回值必须是两个有限的数,否则判接口错误;
@@ -100,7 +100,7 @@ class Controller:
 
 ## 自行训练
 
-仓库不提供现成的训练环境,自行选定方案。但**判定请直接调用下面这些函数**,以保证训练时和验收时完全一致:
+仓库不提供现成的训练环境,自行选定方案。但**判定请直接调用下面这些函数**,复用验收的碰撞和进度规则。下面是简化循环;完整的输出校验、超时和冲线插值以 `run_lap()` 为准:
 
 ```python
 import numpy as np
@@ -113,12 +113,22 @@ track = load_track('A').perturbed(seed)         # 地图扰动;不要扰动就�
 car = Car(noisy_params(CarParams(), rng))       # 车参数扰动;不要就 Car(CarParams())
 car.reset(*start_pose(track))
 progress = Progress(track)
-while True:
-    state = noisy_state(State(0.0, car.x, car.y, car.yaw, car.v, car.yaw_rate, car.accel, car.steer), rng)
+t = 0.0
+while t < 120.0:
+    state = noisy_state(State(t, car.x, car.y, car.yaw, car.v, car.yaw_rate, car.accel, car.steer), rng)
     v_cmd, steer_cmd = ...                      # 你的策略,只用 state
     car.step(v_cmd, steer_cmd, DT)
-    if car_off_track(track, car):   # 出界(检查这一步运动的全过程)
+    t += DT
+    if car_off_track(track, car):   # 出界(检查这一步的采样位姿)
         break
     if progress.update(car.x, car.y) >= progress.length:   # 跑完一圈
         break
 ```
+
+### 数据流与时间
+
+初始化一次:完整地图和标称车辆参数 → `Controller(track, car_params)`。
+每 0.02 秒仿真时间:当前状态 → 控制器 → 目标速度、目标前轮转角 → 车辆推进 → 碰撞和完赛判定 → 下一步。
+状态共有 8 个字段(包括时间)。原版为真值;扰动版为当前真值加独立观测噪声,判定和日志始终用真值。
+没有虚拟雷达、IMU 积分定位或额外通信延迟。50 Hz 是仿真频率,运行一圈的电脑耗时取决于算法。
+车辆仍有速度响应惯性和转向速率限制,指令不会瞬间变成实际状态。

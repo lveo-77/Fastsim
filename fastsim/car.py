@@ -13,7 +13,7 @@ import numpy as np
 
 from fastsim.params import CarParams
 
-SWEEP = 0.03        # 出界检查的位姿间隔 m:一步里每走这么远记一个中间位姿,防止两帧之间擦过边界
+SWEEP = 0.01        # 车身点运动路程的采样上限 m;减少漏检,不是连续碰撞检测
 
 
 class Car:
@@ -31,6 +31,10 @@ class Car:
         self.trace = np.array([[self.x, self.y, self.yaw]])     # 上一步经过的位姿 (k,3),含终点
 
     def step(self, v_cmd: float, steer_cmd: float, dt: float):
+        if not math.isfinite(dt) or dt <= 0:
+            raise ValueError('dt must be finite and positive')
+        if not math.isfinite(v_cmd) or not math.isfinite(steer_cmd):
+            raise ValueError('commands must be finite')
         p = self.p
         target_v = min(max(v_cmd, 0.0), p.v_max)
         dv = (target_v - self.v) * min(1.0, dt / p.speed_tau)
@@ -46,12 +50,17 @@ class Car:
         a_lat = abs(self.v * yaw_rate)
         budget = math.sqrt(max(p.a_lat_max ** 2 - min(accel ** 2, p.a_lat_max ** 2), 0.0))
         self.slip = 0.0
-        if a_lat > budget > 0.0:
+        if a_lat > budget:
             self.slip = 1.0 - budget / a_lat
             yaw_rate *= budget / a_lat
         self.yaw_rate = yaw_rate
         # 中点积分;中间位姿按同一公式取走过 f 比例时的位置,终点就是 f=1
-        f = np.arange(1, max(1, math.ceil(self.v * dt / SWEEP)) + 1) / max(1, math.ceil(self.v * dt / SWEEP))
+        # 计入后轴平移、中点轨迹的旋转项,以及车身最远角的转动。
+        radius = math.hypot(max(p.rear_overhang, p.length - p.rear_overhang), p.width / 2)
+        distance = abs(self.v * dt)
+        angle = abs(yaw_rate * dt)
+        count = max(1, math.ceil((distance * (1 + angle / 2) + radius * angle) / SWEEP))
+        f = np.linspace(0.0, 1.0, count + 1)  # 起点也检查,避免漏掉初始碰撞
         yaw_mid = self.yaw + 0.5 * yaw_rate * dt * f
         xs = self.x + self.v * np.cos(yaw_mid) * dt * f
         ys = self.y + self.v * np.sin(yaw_mid) * dt * f

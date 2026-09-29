@@ -81,28 +81,33 @@ class _Remote:
         ctx = mp.get_context('spawn')
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_worker, args=(child, workdir), daemon=True)
-        self.proc.start()
         self.step_times = []
         try:
+            self.proc.start()
+            child.close()
             self.conn.send((replace(track, name='?'), car))   # 不告诉学生是哪条赛道
             self._expect(INIT_LIMIT, 'init_timeout')
         except BaseException:
+            child.close()
             self.close()                                      # 初始化失败也要收掉子进程
             raise
 
     def _expect(self, limit, timeout_reason):
-        if not self.conn.poll(limit):
-            raise _Abort(timeout_reason)
         try:
+            if not self.conn.poll(limit):
+                raise _Abort(timeout_reason)
             kind, payload = self.conn.recv()
-        except EOFError:
+        except (EOFError, OSError):
             raise _Abort('error', '子进程退出')
         if kind != 'ok':
             raise _Abort(kind, payload)
         return payload
 
     def __call__(self, state):
-        self.conn.send(astuple(state))
+        try:
+            self.conn.send(astuple(state))
+        except (EOFError, OSError):
+            raise _Abort('error', '子进程退出')
         v, steer, dt = self._expect(STEP_HARD_LIMIT, 'too_slow')
         self.step_times.append(dt)
         return v, steer
@@ -112,9 +117,14 @@ class _Remote:
             self.conn.send(None)
         except (BrokenPipeError, OSError):
             pass
-        self.proc.join(2)
-        if self.proc.is_alive():
-            self.proc.kill()
+        if self.proc.pid is not None:
+            self.proc.join(2)
+            if self.proc.is_alive():
+                self.proc.kill()
+                self.proc.join(2)
+            if not self.proc.is_alive():
+                self.proc.close()
+        self.conn.close()
 
 
 # ---------------- 主进程:判定 ----------------
@@ -186,6 +196,8 @@ def main():
             print('  找不到 controller.py,跳过')
             row['note'] = '缺 controller.py'
             rows.append(row)
+            if unpacked:
+                shutil.rmtree(unpacked, ignore_errors=True)
             continue
         idea = homework / '思路.md'
         row['思路.md'] = '有' if idea.is_file() and idea.stat().st_size > 0 else '缺'
