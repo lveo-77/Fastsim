@@ -45,10 +45,12 @@ class Car:
         target_steer = min(max(steer_cmd, -p.max_steer), p.max_steer)
         self.steer += min(max(target_steer - self.steer, -p.steer_rate * dt), p.steer_rate * dt)
 
-        # 摩擦圆:纵向加减速也占抓地力,横向可用的先扣掉那一份
+        # 总抓地由 μg 的摩擦圆限制;侧向还有独立的 lateral_g 上限。
+        # 不能拿侧向0.3G作为总预算,否则纵向0.4G会把转向预算错误地清零。
         yaw_rate = self.v * math.tan(self.steer) / p.wheelbase
         a_lat = abs(self.v * yaw_rate)
-        budget = math.sqrt(max(p.a_lat_max ** 2 - min(accel ** 2, p.a_lat_max ** 2), 0.0))
+        grip = p.mu * p.g
+        budget = min(p.a_lat_max, math.sqrt(max(grip ** 2 - accel ** 2, 0.0)))
         self.slip = 0.0
         if a_lat > budget:
             self.slip = 1.0 - budget / a_lat

@@ -35,9 +35,10 @@ NOISE = State(t=0.0, x=0.02, y=0.02, yaw=0.01, v=0.02, yaw_rate=0.02, accel=0.1,
 
 
 def noisy_params(p: CarParams, rng: np.random.Generator) -> CarParams:
-    """扰动版的真实车参数:摩擦系数 ±10%,电机响应、舵机速度 ±20%。控制器拿到的仍是标称值。"""
+    """扰动版的真实车参数:摩擦系数和侧向能力上限 ±10%,电机响应、舵机速度 ±20%。控制器拿到的仍是标称值。"""
     return replace(p, mu=p.mu * rng.uniform(0.9, 1.1), speed_tau=p.speed_tau * rng.uniform(0.8, 1.2),
-                   steer_rate=p.steer_rate * rng.uniform(0.8, 1.2))
+                   steer_rate=p.steer_rate * rng.uniform(0.8, 1.2),
+                   lateral_g=p.lateral_g * rng.uniform(0.9, 1.1))
 
 
 def noisy_state(s: State, rng: np.random.Generator) -> State:
