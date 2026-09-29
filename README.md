@@ -92,8 +92,6 @@ class Controller:
 
 ## 提交
 
-把 `homework/` 目录打成 `学号_姓名.zip`,通过课程渠道私下提交,不要传到公开的地方。目录里要有:
-
 - `controller.py`:你的 `Controller`;
 - `思路.md`:用了什么方法、为什么这么做、试过哪些方案、哪里失败了、怎么改的;
 - 其他你用到的代码、模型权重,以及 `requirements.txt`(如果用了第三方库)。
