@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass, replace
 
 import numpy as np
 
@@ -30,18 +30,34 @@ class State:
     steer: float        # 当前前轮实际转角 rad,左正
 
 
+# 扰动版的观测噪声(高斯标准差),和 State 字段一一对应;t 不加
+NOISE = State(t=0.0, x=0.02, y=0.02, yaw=0.01, v=0.02, yaw_rate=0.02, accel=0.1, steer=0.005)
+
+
+def noisy_params(p: CarParams, rng: np.random.Generator) -> CarParams:
+    """扰动版的真实车参数:摩擦系数 ±10%,电机响应、舵机速度 ±20%。控制器拿到的仍是标称值。"""
+    return replace(p, mu=p.mu * rng.uniform(0.9, 1.1), speed_tau=p.speed_tau * rng.uniform(0.8, 1.2),
+                   steer_rate=p.steer_rate * rng.uniform(0.8, 1.2))
+
+
+def noisy_state(s: State, rng: np.random.Generator) -> State:
+    """给状态加观测噪声(定位、IMU、编码器的误差)。"""
+    return State(*(v + rng.normal(0.0, sd) if sd else v for v, sd in zip(astuple(s), astuple(NOISE))))
+
+
 @dataclass
 class LapResult:
     finished: bool
     time: float                 # 完赛用时 s(冲线时刻插值);没完赛就是停下时的时间
     reason: str                 # 'finished' / 'off_track' / 'timeout' / 'bad_output'
-    log: np.ndarray             # (n,5) 每步 [t, x, y, yaw, v]
+    log: np.ndarray             # (n,5) 每步 [t, x, y, yaw, v](真值)
     ctrl_time: float = 0.0      # 控制器每步平均耗时 s
+    progress: float = 0.0       # 停下时跑完了一圈的多少(0~1)
 
     def __str__(self):
         if self.finished:
             return f'完赛 {self.time:.3f}s  最高 {self.log[:, 4].max():.2f}m/s'
-        return f'{self.reason} @ {self.time:.2f}s'
+        return f'{self.reason} @ {self.time:.2f}s(一圈的 {self.progress:.0%})'
 
 
 def start_pose(track: Track) -> tuple[float, float, float]:
@@ -50,19 +66,35 @@ def start_pose(track: Track) -> tuple[float, float, float]:
     return float(x0), float(y0), math.atan2(y1 - y0, x1 - x0)
 
 
-def car_off_track(track: Track, car: Car) -> bool:
-    """车身矩形是否碰到边界:任何一个角出了赛道,或者有边界折点落进车身。
+def _cross(p0, p1, q0, q1) -> bool:
+    """线段组 p0->p1 (n,2) 与 q0->q1 (m,2) 有没有任何一对严格相交。"""
+    def orient(a, b, c):
+        return (b[..., 0] - a[..., 0]) * (c[..., 1] - a[..., 1]) - (b[..., 1] - a[..., 1]) * (c[..., 0] - a[..., 0])
+    P0, P1, Q0, Q1 = p0[:, None], p1[:, None], q0[None], q1[None]
+    return bool(((orient(P0, P1, Q0) * orient(P0, P1, Q1) < 0) &
+                 (orient(Q0, Q1, P0) * orient(Q0, Q1, P1) < 0)).any())
 
-    边界都是折线,两条都查才精确 —— 只查四个角的话,内弯的尖角能从车身侧边插进去不被发现。
+
+def car_off_track(track: Track, car: Car) -> bool:
+    """车身在上一步的运动过程中有没有碰到边界(检查 car.trace 里每个位姿)。
+
+    每个位姿查三样:车身四个角都在赛道上、没有边界折点进入车身、车身的边和边界线段不相交。
+    三样都查,车身矩形和边界折线的相交判定才是精确的;只查四个角的话,内弯尖角能从车身侧边插进去。
     """
-    if not track.on_track(car.corners()).all():
+    corners = car.corners(car.trace)                                  # (k,4,2)
+    if not track.on_track(corners.reshape(-1, 2)).all():
         return True
     p = car.p
-    rel = track.vertices - (car.x, car.y)
-    c, s = math.cos(car.yaw), math.sin(car.yaw)
-    lx = rel[:, 0] * c + rel[:, 1] * s
-    ly = -rel[:, 0] * s + rel[:, 1] * c
-    return bool(((lx > -p.rear_overhang) & (lx < p.length - p.rear_overhang) & (np.abs(ly) < p.width / 2)).any())
+    for x, y, yaw in car.trace:
+        rel = track.vertices - (x, y)
+        c, s = math.cos(yaw), math.sin(yaw)
+        lx = rel[:, 0] * c + rel[:, 1] * s
+        ly = -rel[:, 0] * s + rel[:, 1] * c
+        if ((lx > -p.rear_overhang) & (lx < p.length - p.rear_overhang) & (np.abs(ly) < p.width / 2)).any():
+            return True
+    body0 = corners.reshape(-1, 2)
+    body1 = np.roll(corners, -1, axis=1).reshape(-1, 2)
+    return _cross(body0, body1, *track.segments)
 
 
 class Progress:
@@ -80,19 +112,27 @@ class Progress:
 
 
 def run_lap(track: Track, controller, car_params: CarParams = CarParams(),
-            time_limit: float = 120.0) -> LapResult:
-    """controller(state: State) -> (目标车速 m/s, 目标前轮转角 rad),每 DT 秒调用一次。"""
-    car = Car(car_params)
+            time_limit: float = 120.0, noise_seed: int | None = None) -> LapResult:
+    """controller(state: State) -> (目标车速 m/s, 目标前轮转角 rad),每 DT 秒调用一次。
+
+    noise_seed 不为 None 时:真实车参数按 noisy_params 扰动,控制器看到的状态加 noisy_state 噪声
+    (判定、计时、log 都用真值)。控制器应按标称的 car_params 构造。
+    """
+    rng = np.random.default_rng(noise_seed) if noise_seed is not None else None
+    car = Car(noisy_params(car_params, rng) if rng else car_params)
     car.reset(*start_pose(track))
     progress = Progress(track)
     t, done, ctrl = 0.0, 0.0, 0.0
     log = [(t, car.x, car.y, car.yaw, car.v)]
 
     def result(finished, t_end, reason):
-        return LapResult(finished, t_end, reason, np.array(log), ctrl / max(1, len(log) - 1))
+        return LapResult(finished, t_end, reason, np.array(log), ctrl / max(1, len(log) - 1),
+                         1.0 if finished else max(0.0, done / progress.length))
 
     while t < time_limit:
         state = State(t, car.x, car.y, car.yaw, car.v, car.yaw_rate, car.accel, car.steer)
+        if rng:
+            state = noisy_state(state, rng)
         t0 = time.perf_counter()
         out = controller(state)
         ctrl += time.perf_counter() - t0

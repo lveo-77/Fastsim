@@ -183,3 +183,61 @@ def test_accept_finds_homework_in_any_zip_layout(tmp_path, layout):
     zipfile.ZipFile(z).extractall(out)
     hw = accept.find_homework(out)
     assert (hw / 'controller.py').read_text() == 'class Controller: pass\n'
+
+
+# ---------------- 精确判定与噪声 ----------------
+
+def _box_track(needle):
+    """10m 见方的场地,中间挖掉 needle 多边形,用来构造特定的几何。"""
+    from fastsim import Track
+    sq = np.array([[-5, -5], [5, -5], [5, 5], [-5, 5]], float)
+    return Track('box', np.array([[-3.0, -4.0], [3.0, -4.0], [3.0, 4.0], [-3.0, 4.0]]), np.asarray(needle, float), sq)
+
+
+def test_thin_wall_crossing_the_car_is_off_track():
+    """边界细条横穿车身:四个角都在赛道上、也没有折点进车身,只有边相交能判出来。"""
+    t = _box_track([[0.10, -1.0], [0.12, -1.0], [0.12, 1.0], [0.10, 1.0]])
+    car = Car()
+    car.reset(0.0, 0.0, 0.0)                                # 车身 x -0.13~0.43, y ±0.175
+    assert t.on_track(car.corners()).all()
+    assert car_off_track(t, car)
+
+
+def test_every_pose_during_a_step_is_checked():
+    """一步之内的中间位姿都要查:中途碰了、终点回到赛道上,也算出界。"""
+    t = _box_track([[0.10, 1.0], [0.12, 1.0], [0.12, 1.2], [0.10, 1.2]])
+    car = Car()
+    car.reset(0.0, 0.0, 0.0)
+    car.v = 6.0
+    car.step(6.0, 0.0, 0.02)
+    assert len(car.trace) == 4 and np.allclose(car.trace[-1], (car.x, car.y, car.yaw))
+    assert not car_off_track(t, car)
+    car.trace = np.array([[0.0, 1.0, 0.0], [car.x, car.y, car.yaw]])    # 中途那一刻压在障碍上
+    assert car_off_track(t, car)
+
+
+def test_noise_changes_what_the_controller_sees_but_not_the_judge():
+    t = load_track('B')
+    seen = {}
+    for seed in (None, 5, 5):
+        states = []
+        ctrl = Controller(t, CarParams())
+        r = run_lap(t, lambda s: (states.append(s), ctrl(s))[1], noise_seed=seed)
+        seen.setdefault(seed, []).append((r, states))
+    exact_r, exact_s = seen[None][0]
+    (r1, s1), (r2, s2) = seen[5]
+    assert r1.finished and r1.time == r2.time                # 同一个种子可复现
+    assert s1[3].x != exact_s[3].x                           # 控制器看到的有噪声
+    assert abs(s1[3].x - r1.log[3, 1]) < 0.1                 # log 里是真值,和观测只差噪声
+
+
+def test_accept_cleans_up_child_when_init_fails(tmp_path):
+    import accept
+    d = _student(tmp_path, 'badinit', '''
+        class Controller:
+            def __init__(self, track, car):
+                raise RuntimeError('boom')
+    ''')
+    before = set(p.pid for p in __import__('multiprocessing').active_children())
+    assert _accept_one(d)[1] == 'error'
+    assert not (set(p.pid for p in __import__('multiprocessing').active_children()) - before)

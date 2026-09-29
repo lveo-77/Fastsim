@@ -2,7 +2,7 @@
 
     python grade.py                 # A B C D 四条都跑
     python grade.py --tracks B      # 只跑 B
-    python grade.py --perturb 3     # 再加每条赛道 3 个扰动版(边界抖几厘米、整体旋转平移)
+    python grade.py --perturb 3     # 再加每条赛道 3 个扰动版(地图扰动 + 车参数扰动 + 观测噪声)
     python grade.py --plot          # 每条赛道出一张图,存到 out/
 
 正式验收用 accept.py,判定和这里完全一样,只是把你的代码放在单独进程里跑。
@@ -30,11 +30,11 @@ def main():
     tracks = []
     for name in args.tracks:
         base = load_track(name)
-        tracks += [base] + [base.perturbed(seed) for seed in range(1, args.perturb + 1)]
+        tracks += [(base, None)] + [(base.perturbed(seed), seed) for seed in range(1, args.perturb + 1)]
     times = []
-    for track in tracks:
+    for track, seed in tracks:
         try:
-            result = run_lap(track, Controller(track, car), car)
+            result = run_lap(track, Controller(track, car), car, noise_seed=seed)
         except Exception:
             traceback.print_exc()
             print(f'赛道 {track.name:5s}  你的代码报错')

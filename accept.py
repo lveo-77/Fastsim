@@ -7,9 +7,11 @@
 
 做的事:
   1. 只取学生的 homework/,和本仓库的 fastsim/ 拼成临时工作区;
-  2. 每条赛道(A-D 原版 + 每条 --perturb 个扰动版)单独起一个子进程运行学生的 Controller,
+  2. 每条赛道(A-D 原版 + 每条 --perturb 个扰动版:地图扰动 + 车参数扰动 + 观测噪声)
+     单独起一个子进程运行学生的 Controller,
      仿真和判定在本进程里做,本进程从不导入学生代码 —— 学生改不了车模型和计时;
-  3. 限制:Controller 初始化 60 秒;控制器每步平均 ≤ 20ms,单步 ≤ 1 秒;
+  3. 限制:Controller 初始化 60 秒;每步平均计算时间 ≤ 20ms(子进程里只计 controller(state) 本身);
+     单步端到端 ≤ 1 秒(含进程通信,防止卡死);
   4. 报告每条赛道是否完赛(圈速仅供参考,不排名),以及有没有交 思路.md。
 
 学生代码会在本机执行,来源不可信的话请在虚拟机或容器里跑。
@@ -80,9 +82,13 @@ class _Remote:
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_worker, args=(child, workdir), daemon=True)
         self.proc.start()
-        self.conn.send((replace(track, name='?'), car))       # 不告诉学生是哪条赛道
         self.step_times = []
-        self._expect(INIT_LIMIT, 'init_timeout')
+        try:
+            self.conn.send((replace(track, name='?'), car))   # 不告诉学生是哪条赛道
+            self._expect(INIT_LIMIT, 'init_timeout')
+        except BaseException:
+            self.close()                                      # 初始化失败也要收掉子进程
+            raise
 
     def _expect(self, limit, timeout_reason):
         if not self.conn.poll(limit):
@@ -127,18 +133,19 @@ def workspace(homework: Path) -> str:
     return str(tmp)
 
 
-def run_one(workdir: str, track, car):
+def run_one(workdir: str, track, car, noise_seed=None):
     from fastsim import run_lap
     remote = None
     try:
         remote = _Remote(workdir, track, car)
-        r = run_lap(track, remote, car)
+        r = run_lap(track, remote, car, noise_seed=noise_seed)
         mean = float(np.mean(remote.step_times)) if remote.step_times else 0.0
         if r.reason == 'bad_output':
             return None, 'bad_output', 'NaN/inf'
         if mean > STEP_MEAN_LIMIT:
             return None, 'too_slow', f'每步平均 {mean * 1e3:.1f}ms'
-        return (r.time if r.finished else None), r.reason, f'每步 {mean * 1e3:.2f}ms'
+        where = '' if r.finished else f'停在一圈的 {r.progress:.0%} 处  '
+        return (r.time if r.finished else None), r.reason, f'{where}每步 {mean * 1e3:.2f}ms'
     except _Abort as e:
         return None, e.reason, str(e.detail).strip().splitlines()[-1] if e.detail else ''
     finally:
@@ -160,7 +167,7 @@ def main():
     tracks = []
     for name in TRACKS:
         base = load_track(name)
-        tracks += [base] + [base.perturbed(args.seed + k) for k in range(args.perturb)]
+        tracks += [(base, None)] + [(base.perturbed(args.seed + k), args.seed + k) for k in range(args.perturb)]
 
     rows = []
     for sub in args.students:
@@ -185,8 +192,8 @@ def main():
         workdir = workspace(homework)
         done = 0
         try:
-            for track in tracks:
-                t, reason, detail = run_one(workdir, track, car)
+            for track, seed in tracks:
+                t, reason, detail = run_one(workdir, track, car, seed)
                 shown = f'{t:.3f}s' if t is not None else reason
                 print(f'  {track.name:14s} {shown:>12s}  {detail}')
                 row[track.name] = shown
@@ -200,7 +207,7 @@ def main():
         rows.append(row)
 
     if args.csv:
-        fields = ['student', '完赛', '思路.md'] + [t.name for t in tracks] + ['note']
+        fields = ['student', '完赛', '思路.md'] + [t.name for t, _ in tracks] + ['note']
         with open(args.csv, 'w', newline='', encoding='utf-8-sig') as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()

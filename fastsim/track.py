@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +38,16 @@ def _inside(poly: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return ((cross & (x < xi)).sum(axis=1) % 2) == 1
 
 
+def _dist_to_polyline(pts: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """每个点到闭合折线的最近距离(点到线段,精确)。"""
+    a, b = poly, np.roll(poly, -1, axis=0)
+    ab = b - a
+    len2 = np.maximum((ab ** 2).sum(axis=1), 1e-12)                  # 数据里有首尾重复的零长线段
+    t = np.clip(((pts[:, None, :] - a[None]) * ab[None]).sum(axis=2) / len2[None], 0, 1)
+    near = a[None] + t[..., None] * ab[None]
+    return np.hypot(*(pts[:, None, :] - near).transpose(2, 0, 1)).min(axis=1)
+
+
 @dataclass
 class Track:
     name: str
@@ -49,22 +60,29 @@ class Track:
         return float(np.hypot(*np.diff(np.vstack([self.centerline, self.centerline[:1]]), axis=0).T).sum())
 
     def bounds(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """中心线每个点的 (左法向单位向量 (n,2), 到左边界距离 (n,), 到右边界距离 (n,))。
+        """中心线每个点的 (左法向单位向量 (n,2), 到左边界最近距离 (n,), 到右边界最近距离 (n,))。
 
-        centerline[i] + t * normal[i] 在 -d_right[i] < t < d_left[i] 之间都在赛道上。
+        距离是点到边界折线的**最近**距离(精确值),不是沿法向量到边界的距离:
+        在弯道、斜边处最近距离更小,所以它是保守的 ——
+        以 centerline[i] 为圆心、d_left/d_right 中较小者为半径的圆内全在赛道上,
+        沿法向在 -d_right[i] < t < d_left[i] 之间也一定在赛道上;但实际可用宽度可能更大。
         """
         c = self.centerline
         tangent = np.roll(c, -1, axis=0) - np.roll(c, 1, axis=0)
         tangent /= np.hypot(*tangent.T)[:, None]
         normal = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1)
-        dist = [np.hypot(*(c[:, None, :] - resample_closed(edge, 0.02)[None]).transpose(2, 0, 1)).min(axis=1)
-                for edge in (self.left, self.right)]
-        return normal, dist[0], dist[1]
+        return normal, _dist_to_polyline(c, self.left), _dist_to_polyline(c, self.right)
 
-    @property
+    @cached_property
     def vertices(self) -> np.ndarray:
         """两条边界的全部折点。"""
         return np.vstack([self.left, self.right])
+
+    @cached_property
+    def segments(self) -> tuple[np.ndarray, np.ndarray]:
+        """两条边界的全部线段 (起点 (m,2), 终点 (m,2))。"""
+        return (np.vstack([self.left, self.right]),
+                np.vstack([np.roll(self.left, -1, axis=0), np.roll(self.right, -1, axis=0)]))
 
     def perturbed(self, seed: int, jitter: float = 0.03) -> 'Track':
         """同一条赛道的扰动版:边界折点各自沿法向抖 ±jitter 米,再整体随机旋转、平移。

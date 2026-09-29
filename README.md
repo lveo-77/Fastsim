@@ -51,13 +51,13 @@ class Controller:
 |---|---|
 | `track.left` / `track.right` | 左(内)、右(外)边界,闭合折线 |
 | `track.centerline` | 中心线,5 cm 一个点,首点是起跑线 |
-| `track.bounds()` | 中心线每点的左法向,以及到左、右边界的距离 |
+| `track.bounds()` | 中心线每点的左法向,以及到左、右边界的**最近**距离(保守值,弯道处实际可用宽度可能更大) |
 | `track.on_track(points)` | 判断一批点在不在赛道上 |
 | `track.project(xy)` | 点投影到中心线:走过的弧长、横向偏移 |
 | `track.length` | 一圈长度 |
 | `car_params` | 车的全部参数,见 [docs/车辆参数.md](docs/车辆参数.md) |
 
-每步(`state`,精确值,只读):
+每步(`state`,只读;原版赛道上是精确值,扰动版上带观测噪声):
 
 | 字段 | 含义 |
 |---|---|
@@ -82,7 +82,10 @@ class Controller:
 
 ### 验收怎么做
 
-- 验收赛道 = A–D 原版 + 每条若干**扰动版**:边界折点随机抖几厘米、整张图随机旋转平移。扰动的随机种子验收当天才定。所以请写通用的方法,不要针对四条赛道分别背答案;
+- 验收赛道 = A–D 原版 + 每条若干**扰动版**。扰动的随机种子验收当天才定,所以请写通用的方法,不要针对四条赛道分别背答案。扰动版同时加上:
+  - 地图:边界折点随机抖 ±3 cm,整张图随机旋转、平移;
+  - 车:摩擦系数 ±10%,电机响应时间、舵机速度 ±20%(`Controller` 拿到的仍是标称参数);
+  - 观测噪声(标准差):位置 2 cm、朝向 0.01 rad、车速 0.02 m/s、横摆角速度 0.02 rad/s、加速度 0.1 m/s²、转角 0.005 rad;
 - 验收只取你的 `homework/` 目录,放进一份干净的本仓库里跑,`homework/` 以外的改动都不生效;
 - 你的代码在单独的进程里运行,只能通过 `Controller` 的返回值影响车;
 - 用到的第三方库(torch、scipy……)写进 `homework/requirements.txt`。
@@ -100,16 +103,21 @@ class Controller:
 仓库不提供现成的训练环境,自行选定方案。但**判定请直接调用下面这些函数**,以保证训练时和验收时完全一致:
 
 ```python
-from fastsim import CarParams, DT, Progress, car_off_track, load_track, start_pose
+import numpy as np
+from fastsim import (CarParams, DT, Progress, State, car_off_track, load_track, noisy_params,
+                     noisy_state, start_pose)
 from fastsim.car import Car
 
-track = load_track('A')             # 或 load_track('A').perturbed(seed) 做数据增强
-car = Car(CarParams())
+rng = np.random.default_rng(seed)
+track = load_track('A').perturbed(seed)         # 地图扰动;不要扰动就直接 load_track('A')
+car = Car(noisy_params(CarParams(), rng))       # 车参数扰动;不要就 Car(CarParams())
 car.reset(*start_pose(track))
 progress = Progress(track)
 while True:
+    state = noisy_state(State(0.0, car.x, car.y, car.yaw, car.v, car.yaw_rate, car.accel, car.steer), rng)
+    v_cmd, steer_cmd = ...                      # 你的策略,只用 state
     car.step(v_cmd, steer_cmd, DT)
-    if car_off_track(track, car):   # 出界
+    if car_off_track(track, car):   # 出界(检查这一步运动的全过程)
         break
     if progress.update(car.x, car.y) >= progress.length:   # 跑完一圈
         break
