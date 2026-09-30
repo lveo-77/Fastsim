@@ -1,9 +1,9 @@
-"""作业:写一个控制器,在 A-D 任意一条赛道上跑出最快的一圈。
+"""TODO:写一个控制器,在 A-D 任意一条赛道上跑出最快的一圈。
 
 评分只调用这里的 Controller:
   · Controller(track, car_params)  开跑前调用一次,拿到整条赛道,限时 60 秒;
   · controller(state)              之后每 0.02 秒调用一次,返回 (目标车速 m/s, 目标前轮转角 rad)。
-方法不限(规划+跟踪、PID、MPC、RL、DAgger……),homework/ 下的文件随便改、随便加。
+方法不限(仅可更改homework/ 下的文件)。
 
 下面是默认示例:沿中心线、全程 1 m/s,用 fastsim 自带的纯追踪 PathFollower 跟踪。
 它一定能跑完,但很慢。最省事的改法是只改 plan(),让路线和速度更好。
